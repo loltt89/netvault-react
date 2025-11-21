@@ -187,6 +187,18 @@ def populate_initial_data(apps, schema_editor):
             }
         },
         {
+            'name': 'Eltex',
+            'slug': 'eltex',
+            'description': 'Eltex network equipment (MES/ESR series)',
+            'is_predefined': True,
+            'backup_commands': {
+                'setup': ['terminal datadump'],
+                'backup': 'show running-config',
+                'enable_mode': True,
+                'logout': ['end', 'exit']
+            }
+        },
+        {
             'name': 'Generic',
             'slug': 'generic',
             'description': 'Generic network device (SSH/Telnet)',
