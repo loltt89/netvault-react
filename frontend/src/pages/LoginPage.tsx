@@ -3,13 +3,15 @@
  * Demonstrates proper JWT authentication flow with 2FA support
  */
 
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import apiService from '../services/api.service';
 import './LoginPage.css';
 
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { login } = useAuth();
 
   const [formData, setFormData] = useState({
@@ -20,6 +22,31 @@ const LoginPage: React.FC = () => {
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [require2FA, setRequire2FA] = useState<boolean>(false);
+  const [ssoEnabled, setSsoEnabled] = useState<boolean>(false);
+
+  useEffect(() => {
+    // Check if SSO is enabled
+    checkSsoStatus();
+
+    // Check for SSO errors in URL
+    const ssoError = searchParams.get('error');
+    if (ssoError) {
+      setError(`SSO Error: ${searchParams.get('message') || ssoError}`);
+    }
+  }, [searchParams]);
+
+  const checkSsoStatus = async () => {
+    try {
+      const response = await apiService.request('GET', '/saml/status/');
+      setSsoEnabled(response.enabled);
+    } catch (err) {
+      console.log('SSO status check failed (may not be configured)');
+    }
+  };
+
+  const handleSsoLogin = () => {
+    window.location.href = '/api/v1/saml/login/';
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({
@@ -136,6 +163,22 @@ const LoginPage: React.FC = () => {
           >
             {loading ? 'Logging in...' : 'Login'}
           </button>
+
+          {ssoEnabled && (
+            <>
+              <div className="login-divider">
+                <span>or</span>
+              </div>
+              <button
+                type="button"
+                className="sso-button"
+                onClick={handleSsoLogin}
+                disabled={loading}
+              >
+                🔐 Login with SSO
+              </button>
+            </>
+          )}
         </form>
 
         <div className="login-footer">

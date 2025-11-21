@@ -50,7 +50,7 @@ const SystemSettings: React.FC = () => {
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<'email' | 'telegram' | 'ldap' | 'backup' | 'device_check' | 'jwt' | 'redis' | 'vendors' | 'devicetypes'>('email');
+  const [activeTab, setActiveTab] = useState<'email' | 'telegram' | 'ldap' | 'saml' | 'backup' | 'device_check' | 'jwt' | 'redis' | 'vendors' | 'devicetypes'>('email');
 
   // Form states
   const [emailSettings, setEmailSettings] = useState({
@@ -73,6 +73,26 @@ const SystemSettings: React.FC = () => {
     bind_dn: '',
     bind_password: '',
     user_search_base: '',
+  });
+
+  const [samlSettings, setSamlSettings] = useState({
+    enabled: false,
+    sp_entity_id: '',
+    sp_acs_url: '',
+    sp_sls_url: '',
+    sp_metadata_url: '',
+    idp_entity_id: '',
+    idp_sso_url: '',
+    idp_slo_url: '',
+    idp_x509_cert: '',
+    attr_username: 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name',
+    attr_email: 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress',
+    attr_first_name: 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname',
+    attr_last_name: 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname',
+    auto_create_users: true,
+    default_role: 'viewer',
+    want_assertions_signed: true,
+    want_messages_signed: false,
   });
 
   const [backupSettings, setBackupSettings] = useState({
@@ -109,6 +129,7 @@ const SystemSettings: React.FC = () => {
     loadSettings();
     loadVendors();
     loadDeviceTypes();
+    loadSamlSettings();
   }, []);
 
   const loadSettings = async () => {
@@ -405,6 +426,28 @@ const SystemSettings: React.FC = () => {
     }
   };
 
+  const loadSamlSettings = async () => {
+    try {
+      const response = await apiService.request('GET', '/saml/settings/');
+      setSamlSettings(response);
+    } catch (error) {
+      console.error('Error loading SAML settings:', error);
+    }
+  };
+
+  const handleSaveSaml = async () => {
+    try {
+      setSaving(true);
+      await apiService.request('POST', '/saml/settings/', samlSettings);
+      alert(t('systemSettings.saml.saved'));
+    } catch (error: any) {
+      console.error('Error saving SAML settings:', error);
+      alert(error.response?.data?.error || t('systemSettings.saml.failed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleAddDeviceType = () => {
     setDeviceTypeForm({ name: '', slug: '', description: '', icon: 'router' });
     setShowDeviceTypeModal(true);
@@ -483,6 +526,12 @@ const SystemSettings: React.FC = () => {
           onClick={() => setActiveTab('ldap')}
         >
           🔐 {t('systemSettings.tabs.ldap')}
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'saml' ? 'active' : ''}`}
+          onClick={() => setActiveTab('saml')}
+        >
+          🔑 SAML SSO
         </button>
         <button
           className={`tab-btn ${activeTab === 'backup' ? 'active' : ''}`}
@@ -723,6 +772,219 @@ const SystemSettings: React.FC = () => {
 
           <div style={{ marginTop: '1.5rem' }}>
             <button onClick={handleSaveLDAP} className="btn-primary" disabled={saving}>
+              {saving ? t('systemSettings.saving') : t('systemSettings.save_settings')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* SAML SSO Settings */}
+      {activeTab === 'saml' && (
+        <div className="settings-tab-content">
+          <div className="form-group">
+            <div className="checkbox-group">
+              <input
+                type="checkbox"
+                id="saml_enabled"
+                checked={samlSettings.enabled}
+                onChange={(e) => setSamlSettings({ ...samlSettings, enabled: e.target.checked })}
+              />
+              <label htmlFor="saml_enabled" style={{ fontWeight: 600, fontSize: '1rem' }}>
+                Enable SAML 2.0 SSO
+              </label>
+            </div>
+          </div>
+
+          <div className="info-card" style={{ marginBottom: '1rem', padding: '1rem', backgroundColor: 'var(--hover-bg)' }}>
+            <p style={{ margin: 0, fontSize: '0.9rem' }}>
+              <strong>SAML 2.0 Single Sign-On</strong><br />
+              Configure SAML SSO to allow users to authenticate via your Identity Provider (Azure AD, Okta, ADFS, etc.)
+            </p>
+          </div>
+
+          {/* SP Information (Read-only) */}
+          <h4 style={{ marginTop: '1.5rem', marginBottom: '1rem' }}>Service Provider (SP) Information</h4>
+          <div className="info-card" style={{ marginBottom: '1rem', padding: '1rem', backgroundColor: 'var(--bg-tertiary)' }}>
+            <p style={{ margin: '0.25rem 0', fontSize: '0.85rem' }}>
+              <strong>Metadata URL:</strong> <code>{samlSettings.sp_metadata_url || `${window.location.origin}/api/v1/saml/metadata/`}</code>
+            </p>
+            <p style={{ margin: '0.25rem 0', fontSize: '0.85rem' }}>
+              <strong>ACS URL:</strong> <code>{samlSettings.sp_acs_url || `${window.location.origin}/api/v1/saml/acs/`}</code>
+            </p>
+            <p style={{ margin: '0.25rem 0', fontSize: '0.85rem' }}>
+              <strong>Entity ID:</strong> <code>{samlSettings.sp_entity_id || `${window.location.origin}/api/v1/saml/metadata/`}</code>
+            </p>
+          </div>
+
+          <div className="form-group">
+            <label>SP Entity ID (optional)</label>
+            <input
+              type="text"
+              value={samlSettings.sp_entity_id}
+              onChange={(e) => setSamlSettings({ ...samlSettings, sp_entity_id: e.target.value })}
+              placeholder={`${window.location.origin}/api/v1/saml/metadata/`}
+              disabled={!samlSettings.enabled}
+            />
+          </div>
+
+          {/* IdP Configuration */}
+          <h4 style={{ marginTop: '1.5rem', marginBottom: '1rem' }}>Identity Provider (IdP) Configuration</h4>
+
+          <div className="form-group">
+            <label>IdP Entity ID *</label>
+            <input
+              type="text"
+              value={samlSettings.idp_entity_id}
+              onChange={(e) => setSamlSettings({ ...samlSettings, idp_entity_id: e.target.value })}
+              placeholder="https://sts.windows.net/xxxxx/"
+              disabled={!samlSettings.enabled}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>IdP SSO URL *</label>
+            <input
+              type="text"
+              value={samlSettings.idp_sso_url}
+              onChange={(e) => setSamlSettings({ ...samlSettings, idp_sso_url: e.target.value })}
+              placeholder="https://login.microsoftonline.com/xxxxx/saml2"
+              disabled={!samlSettings.enabled}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>IdP SLO URL (optional)</label>
+            <input
+              type="text"
+              value={samlSettings.idp_slo_url}
+              onChange={(e) => setSamlSettings({ ...samlSettings, idp_slo_url: e.target.value })}
+              placeholder="https://login.microsoftonline.com/xxxxx/saml2"
+              disabled={!samlSettings.enabled}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>IdP X.509 Certificate *</label>
+            <textarea
+              value={samlSettings.idp_x509_cert}
+              onChange={(e) => setSamlSettings({ ...samlSettings, idp_x509_cert: e.target.value })}
+              placeholder="-----BEGIN CERTIFICATE-----&#10;MIICxxxx...&#10;-----END CERTIFICATE-----"
+              rows={6}
+              disabled={!samlSettings.enabled}
+              style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
+            />
+          </div>
+
+          {/* Attribute Mapping */}
+          <h4 style={{ marginTop: '1.5rem', marginBottom: '1rem' }}>Attribute Mapping</h4>
+
+          <div className="form-group">
+            <label>Username Attribute</label>
+            <input
+              type="text"
+              value={samlSettings.attr_username}
+              onChange={(e) => setSamlSettings({ ...samlSettings, attr_username: e.target.value })}
+              disabled={!samlSettings.enabled}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Email Attribute</label>
+            <input
+              type="text"
+              value={samlSettings.attr_email}
+              onChange={(e) => setSamlSettings({ ...samlSettings, attr_email: e.target.value })}
+              disabled={!samlSettings.enabled}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>First Name Attribute</label>
+            <input
+              type="text"
+              value={samlSettings.attr_first_name}
+              onChange={(e) => setSamlSettings({ ...samlSettings, attr_first_name: e.target.value })}
+              disabled={!samlSettings.enabled}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Last Name Attribute</label>
+            <input
+              type="text"
+              value={samlSettings.attr_last_name}
+              onChange={(e) => setSamlSettings({ ...samlSettings, attr_last_name: e.target.value })}
+              disabled={!samlSettings.enabled}
+            />
+          </div>
+
+          {/* User Provisioning */}
+          <h4 style={{ marginTop: '1.5rem', marginBottom: '1rem' }}>User Provisioning</h4>
+
+          <div className="form-group">
+            <div className="checkbox-group">
+              <input
+                type="checkbox"
+                id="saml_auto_create"
+                checked={samlSettings.auto_create_users}
+                onChange={(e) => setSamlSettings({ ...samlSettings, auto_create_users: e.target.checked })}
+                disabled={!samlSettings.enabled}
+              />
+              <label htmlFor="saml_auto_create">
+                Auto-create users on first login
+              </label>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Default Role for New Users</label>
+            <select
+              value={samlSettings.default_role}
+              onChange={(e) => setSamlSettings({ ...samlSettings, default_role: e.target.value })}
+              disabled={!samlSettings.enabled}
+            >
+              <option value="viewer">Viewer</option>
+              <option value="operator">Operator</option>
+              <option value="auditor">Auditor</option>
+              <option value="administrator">Administrator</option>
+            </select>
+          </div>
+
+          {/* Security */}
+          <h4 style={{ marginTop: '1.5rem', marginBottom: '1rem' }}>Security Options</h4>
+
+          <div className="form-group">
+            <div className="checkbox-group">
+              <input
+                type="checkbox"
+                id="saml_want_assertions_signed"
+                checked={samlSettings.want_assertions_signed}
+                onChange={(e) => setSamlSettings({ ...samlSettings, want_assertions_signed: e.target.checked })}
+                disabled={!samlSettings.enabled}
+              />
+              <label htmlFor="saml_want_assertions_signed">
+                Require signed assertions
+              </label>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <div className="checkbox-group">
+              <input
+                type="checkbox"
+                id="saml_want_messages_signed"
+                checked={samlSettings.want_messages_signed}
+                onChange={(e) => setSamlSettings({ ...samlSettings, want_messages_signed: e.target.checked })}
+                disabled={!samlSettings.enabled}
+              />
+              <label htmlFor="saml_want_messages_signed">
+                Require signed messages
+              </label>
+            </div>
+          </div>
+
+          <div style={{ marginTop: '1.5rem' }}>
+            <button onClick={handleSaveSaml} className="btn-primary" disabled={saving}>
               {saving ? t('systemSettings.saving') : t('systemSettings.save_settings')}
             </button>
           </div>

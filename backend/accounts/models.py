@@ -59,6 +59,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_ldap_user = models.BooleanField(default=False)
     ldap_dn = models.CharField(max_length=255, blank=True)
 
+    # SAML SSO integration
+    is_saml_user = models.BooleanField(default=False)
+    saml_name_id = models.CharField(max_length=255, blank=True)
+
     # Timestamps
     date_joined = models.DateTimeField(default=timezone.now)
     last_login = models.DateTimeField(null=True, blank=True)
@@ -164,3 +168,101 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f'{self.user} - {self.action} - {self.resource_type} - {self.timestamp}'
+
+
+class SAMLSettings(models.Model):
+    """SAML SSO Configuration - Singleton model"""
+
+    # General settings
+    enabled = models.BooleanField(default=False)
+
+    # Service Provider (SP) settings
+    sp_entity_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text='Unique identifier for NetVault SP (e.g., https://netvault.example.com/saml/metadata/)'
+    )
+
+    # Identity Provider (IdP) settings
+    idp_entity_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text='Entity ID of the Identity Provider'
+    )
+    idp_sso_url = models.URLField(
+        max_length=500,
+        blank=True,
+        help_text='IdP Single Sign-On URL'
+    )
+    idp_slo_url = models.URLField(
+        max_length=500,
+        blank=True,
+        help_text='IdP Single Logout URL (optional)'
+    )
+    idp_x509_cert = models.TextField(
+        blank=True,
+        help_text='IdP X.509 certificate (PEM format)'
+    )
+
+    # Attribute mapping
+    attr_username = models.CharField(
+        max_length=100,
+        default='http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name',
+        help_text='SAML attribute for username'
+    )
+    attr_email = models.CharField(
+        max_length=100,
+        default='http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress',
+        help_text='SAML attribute for email'
+    )
+    attr_first_name = models.CharField(
+        max_length=100,
+        default='http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname',
+        blank=True,
+        help_text='SAML attribute for first name'
+    )
+    attr_last_name = models.CharField(
+        max_length=100,
+        default='http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname',
+        blank=True,
+        help_text='SAML attribute for last name'
+    )
+
+    # User provisioning
+    auto_create_users = models.BooleanField(
+        default=True,
+        help_text='Automatically create users on first SAML login'
+    )
+    default_role = models.CharField(
+        max_length=20,
+        choices=User.ROLE_CHOICES,
+        default='viewer',
+        help_text='Default role for auto-created users'
+    )
+
+    # Security settings
+    want_assertions_signed = models.BooleanField(default=True)
+    want_messages_signed = models.BooleanField(default=False)
+
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'saml_settings'
+        verbose_name = 'SAML Settings'
+        verbose_name_plural = 'SAML Settings'
+
+    def __str__(self):
+        return f'SAML Settings ({"Enabled" if self.enabled else "Disabled"})'
+
+    def save(self, *args, **kwargs):
+        # Ensure only one instance exists (singleton)
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_settings(cls):
+        """Get or create SAML settings singleton"""
+        obj, created = cls.objects.get_or_create(pk=1)
+        return obj

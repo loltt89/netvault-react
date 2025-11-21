@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import LoginPage from './pages/LoginPage';
+import SSOCallbackPage from './pages/SSOCallbackPage';
 import DashboardPage from './pages/DashboardPage';
 import DevicesPage from './pages/DevicesPage';
 
@@ -40,6 +41,9 @@ function App() {
             </PublicRoute>
           }
         />
+
+        {/* SSO Callback - no auth check needed */}
+        <Route path="/sso-callback" element={<SSOCallbackPage />} />
 
         {/* Protected Routes */}
         <Route
