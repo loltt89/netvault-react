@@ -99,9 +99,36 @@ install_dependencies() {
         systemctl start mariadb
 
         print_success "Dependencies installed"
+    fi
+}
+
+# Setup Redis password
+setup_redis_password() {
+    print_header "Securing Redis"
+
+    # Generate random password for Redis
+    REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+
+    # Configure Redis password
+    if [ -f /etc/redis/redis.conf ]; then
+        # Remove existing requirepass if any
+        sed -i '/^requirepass /d' /etc/redis/redis.conf
+        # Add new password
+        echo "requirepass ${REDIS_PASSWORD}" >> /etc/redis/redis.conf
+
+        # Disable protected-mode since we use password
+        sed -i 's/^protected-mode yes/protected-mode no/' /etc/redis/redis.conf
+
+        # Bind only to localhost
+        sed -i 's/^bind .*/bind 127.0.0.1/' /etc/redis/redis.conf
+
+        # Restart Redis
+        systemctl restart redis-server
+
+        print_success "Redis secured with password"
     else
-        print_error "Unsupported OS: $OS"
-        exit 1
+        print_warning "Redis config not found, skipping password setup"
+        REDIS_PASSWORD=""
     fi
 }
 
@@ -304,7 +331,7 @@ DB_PORT=3306
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
 
 # Redis
-REDIS_URL=redis://localhost:6379/0
+REDIS_URL=redis://:${REDIS_PASSWORD}@localhost:6379/0
 
 # Email Configuration (configure later)
 EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
@@ -820,6 +847,7 @@ main() {
     fi
 
     install_dependencies
+    setup_redis_password
     setup_database
     install_application
     setup_python_env
