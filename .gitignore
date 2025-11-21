@@ -31,5 +31,5 @@ backend/logs/
 .DS_Store
 Thumbs.db
 
-# Backups with sensitive data
-backend/backups/
+# Backup files with sensitive data (not the backups app code)
+# backend/backup_files/
