@@ -219,7 +219,7 @@ build_frontend() {
 
         # Install dependencies
         print_message "$BLUE" "Installing npm dependencies..."
-        npm install
+        npm install --legacy-peer-deps
 
         # Build production
         print_message "$BLUE" "Building production bundle..."
