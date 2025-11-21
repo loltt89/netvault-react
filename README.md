@@ -28,7 +28,40 @@
 - Email и Telegram уведомления (планируется)
 - Управление пользователями и ролями (Administrator, Operator, Auditor, Viewer)
 
-## Установка
+## Быстрая установка (рекомендуется)
+
+Интерактивный скрипт установки автоматически настроит всё необходимое:
+
+```bash
+# Распаковка архива
+tar -xzf netvault-installer.tar.gz
+cd netvault-react
+
+# Запуск установщика (требует root)
+sudo ./install.sh
+```
+
+### Что делает install.sh:
+
+- ✅ Устанавливает все зависимости (Python, MariaDB, Redis, Nginx)
+- ✅ Создаёт базу данных и пользователя
+- ✅ Настраивает Python virtual environment
+- ✅ Генерирует безопасные ключи шифрования
+- ✅ Создаёт администратора системы
+- ✅ Настраивает systemd сервисы (backend, celery worker, celery beat)
+- ✅ Конфигурирует Nginx (HTTP или HTTPS)
+- ✅ Поддержка Let's Encrypt, custom или self-signed сертификатов
+- ✅ Настраивает firewall (UFW)
+
+### Опции SSL/HTTPS:
+
+1. **Let's Encrypt** - автоматический бесплатный сертификат
+2. **Custom certificate** - свои сертификаты
+3. **Self-signed** - для тестирования
+
+---
+
+## Ручная установка
 
 ### 1. Системные требования
 
