@@ -7,7 +7,7 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosError } from 'axios';
 
 // API Base URL
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
+const API_BASE_URL = process.env.REACT_APP_API_URL || '/api/v1';
 
 // Token storage keys
 const ACCESS_TOKEN_KEY = 'access_token';
