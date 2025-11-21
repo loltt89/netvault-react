@@ -203,9 +203,41 @@ setup_database() {
     print_success "Database configured"
 }
 
+# Build frontend if needed
+build_frontend() {
+    if [ ! -d "$CURRENT_DIR/frontend/build" ]; then
+        print_header "Building Frontend (React)"
+
+        # Install Node.js if not present
+        if ! command -v node &> /dev/null; then
+            print_message "$BLUE" "Installing Node.js..."
+            curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+            apt-get install -y nodejs
+        fi
+
+        cd $CURRENT_DIR/frontend
+
+        # Install dependencies
+        print_message "$BLUE" "Installing npm dependencies..."
+        npm install
+
+        # Build production
+        print_message "$BLUE" "Building production bundle..."
+        npm run build
+
+        cd $CURRENT_DIR
+        print_success "Frontend built successfully"
+    else
+        print_success "Frontend build already exists"
+    fi
+}
+
 # Install NetVault application
 install_application() {
     print_header "Installing NetVault Application"
+
+    # Build frontend first if needed
+    build_frontend
 
     # Create installation directory
     mkdir -p $INSTALL_DIR
