@@ -1,0 +1,655 @@
+"""
+Device connection utilities for SSH and Telnet
+"""
+import paramiko
+import telnetlib
+import time
+import socket
+import re
+import ipaddress
+from typing import Optional, Tuple, List
+
+
+class DeviceConnectionError(Exception):
+    """Custom exception for device connection errors"""
+    pass
+
+
+def validate_target_host(host: str) -> None:
+    """
+    Validate target host to prevent SSRF attacks
+
+    Blocks connections to loopback addresses (127.0.0.1, ::1)
+    to prevent attacks on local services (Redis, MariaDB, etc.)
+
+    Args:
+        host: Target hostname or IP address
+
+    Raises:
+        DeviceConnectionError: If host is loopback address
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback:
+            raise DeviceConnectionError(
+                f"Connection to loopback address {host} is forbidden for security reasons. "
+                f"This prevents SSRF attacks on local services."
+            )
+    except ValueError:
+        # Not an IP address, it's a hostname - allow it
+        # (DNS resolution will happen during connection)
+        pass
+
+
+def tcp_ping(host: str, port: int, timeout: int = 2) -> bool:
+    """
+    Quick TCP connection check (does NOT consume VTY lines)
+
+    Args:
+        host: Target host IP or hostname
+        port: Target port (usually 22 for SSH, 23 for Telnet)
+        timeout: Connection timeout in seconds
+
+    Returns:
+        True if port is open, False otherwise
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return result == 0  # 0 means connection successful
+    except Exception as e:
+        return False
+
+
+def clean_device_output(output: str, vendor: str = '', command: str = '') -> str:
+    """
+    Clean command output from prompts, echo commands, and extra characters
+
+    Args:
+        output: Raw command output
+        vendor: Device vendor (for vendor-specific cleaning)
+        command: The command that was executed (to remove echo)
+
+    Returns:
+        Cleaned configuration string
+    """
+    lines = output.split('\n')
+    cleaned_lines = []
+
+    for line in lines:
+        # Remove ANSI escape codes
+        line = re.sub(r'\x1b\[[0-9;]*m', '', line)
+        # Remove carriage returns and other control characters
+        line = re.sub(r'\r', '', line)
+        # Remove --More-- and similar paging markers
+        line = re.sub(r'--More--|-- More --|<--- More --->', '', line)
+
+        # Strip whitespace for checking
+        stripped = line.strip()
+
+        # Skip empty lines
+        if not stripped:
+            continue
+
+        # MikroTik specific cleaning
+        if vendor == 'mikrotik':
+            # Skip MikroTik prompts: [admin@MikroTik] > or [admin@MikroTik] /export
+            if re.match(r'^\[.*?\]\s*[>\/]', stripped):
+                continue
+            # Keep everything else including comments starting with #
+            cleaned_lines.append(line.rstrip())
+            continue
+
+        # For Fortinet, skip console config lines
+        if vendor == 'fortinet':
+            if 'config system console' in stripped.lower():
+                continue
+            if stripped.lower() in ['set output standard', 'end']:
+                continue
+            if re.match(r'^[A-Z0-9]+\s+\(.*\)\s+[#>]', stripped):
+                continue
+
+        # Skip the command echo (exact match or at end of prompt)
+        if command and command in stripped:
+            continue
+
+        # Skip device prompts (ending with # or >)
+        # Router#, Switch>, etc
+        if re.match(r'^[^\s#>]+[#>]\s*$', stripped):
+            continue
+
+        # Keep the line
+        cleaned_lines.append(line.rstrip())
+
+    # Join lines and remove leading/trailing empty lines
+    result = '\n'.join(cleaned_lines)
+    return result.strip()
+
+
+class SSHConnection:
+    """SSH connection handler for network devices"""
+
+    def __init__(self, host: str, port: int, username: str, password: str,
+                 enable_password: Optional[str] = None, timeout: int = 30, vendor: str = ''):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.enable_password = enable_password
+        self.timeout = timeout
+        self.vendor = vendor
+        self.client: Optional[paramiko.SSHClient] = None
+        self.shell: Optional[paramiko.Channel] = None
+
+    def connect(self) -> None:
+        """Establish SSH connection"""
+        try:
+            self.client = paramiko.SSHClient()
+            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+            self.client.connect(
+                hostname=self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+                timeout=self.timeout,
+                look_for_keys=False,
+                allow_agent=False
+            )
+
+            # Open interactive shell
+            self.shell = self.client.invoke_shell()
+            time.sleep(1)
+
+            # Clear initial output
+            if self.shell.recv_ready():
+                self.shell.recv(65535)
+
+        except paramiko.AuthenticationException:
+            raise DeviceConnectionError(f"Authentication failed for {self.host}")
+        except paramiko.SSHException as e:
+            raise DeviceConnectionError(f"SSH error connecting to {self.host}: {str(e)}")
+        except socket.timeout:
+            raise DeviceConnectionError(f"Connection timeout to {self.host}")
+        except Exception as e:
+            raise DeviceConnectionError(f"Failed to connect to {self.host}: {str(e)}")
+
+    def send_command(self, command: str, wait_time: float = 2, handle_paging: bool = True) -> str:
+        """
+        Send command and return output
+
+        Args:
+            command: Command to execute
+            wait_time: Time to wait for output (seconds)
+            handle_paging: Automatically handle paging prompts like --More--
+
+        Returns:
+            Command output as string
+        """
+        if not self.shell:
+            raise DeviceConnectionError("Not connected")
+
+        try:
+            # Send command
+            self.shell.send(command + '\n')
+            time.sleep(wait_time)
+
+            # Collect output with automatic paging handling
+            output = ""
+            max_iterations = 100  # Prevent infinite loops
+            iteration = 0
+            no_data_count = 0
+
+            while iteration < max_iterations:
+                if self.shell.recv_ready():
+                    chunk = self.shell.recv(65535).decode('utf-8', errors='ignore')
+                    if chunk:
+                        output += chunk
+                        no_data_count = 0
+                    time.sleep(0.1)
+
+                    # Check for paging prompts and send space to continue
+                    if handle_paging and ('--More--' in chunk or '-- More --' in chunk or
+                                         '(more)' in chunk.lower() or 'press any key' in chunk.lower()):
+                        self.shell.send(' ')  # Send space to continue
+                        time.sleep(0.5)
+                        iteration += 1
+                        continue
+                else:
+                    no_data_count += 1
+                    # If no data for 3 consecutive checks, consider command done
+                    if no_data_count >= 3:
+                        break
+                    time.sleep(0.2)
+                iteration += 1
+
+            return output
+
+        except Exception as e:
+            raise DeviceConnectionError(f"Error sending command: {str(e)}")
+
+    def send_command_exec(self, command: str, timeout: int = 30) -> str:
+        """
+        Send command using exec_command instead of interactive shell
+        Used for devices like MikroTik where invoke_shell doesn't work properly
+
+        Args:
+            command: Command to execute
+            timeout: Command timeout in seconds
+
+        Returns:
+            Command output as string
+        """
+        if not self.client:
+            raise DeviceConnectionError("Not connected")
+
+        try:
+            stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
+            output = stdout.read().decode('utf-8', errors='ignore')
+            errors = stderr.read().decode('utf-8', errors='ignore')
+
+            if errors:
+                raise DeviceConnectionError(f"Command error: {errors}")
+
+            return output
+
+        except Exception as e:
+            raise DeviceConnectionError(f"Error executing command: {str(e)}")
+
+    def send_commands(self, commands: List[str], wait_time: float = 2) -> List[str]:
+        """
+        Send multiple commands and return their outputs
+
+        Args:
+            commands: List of commands to execute
+            wait_time: Time to wait between commands
+
+        Returns:
+            List of command outputs
+        """
+        outputs = []
+        for command in commands:
+            output = self.send_command(command, wait_time)
+            outputs.append(output)
+        return outputs
+
+    def enable_mode(self) -> str:
+        """Enter enable/privileged mode (for Cisco-like devices)"""
+        if not self.enable_password:
+            return ""
+
+        output = self.send_command("enable", wait_time=1)
+        output += self.send_command(self.enable_password, wait_time=1)
+        return output
+
+    def get_config(self, vendor: str, backup_commands: dict = None) -> str:
+        """
+        Get device configuration based on vendor
+
+        Args:
+            vendor: Device vendor slug (cisco, juniper, huawei, etc.)
+            backup_commands: Optional dict with 'setup' and 'backup' commands
+                           Format: {'setup': ['cmd1', 'cmd2'], 'backup': 'show running-config'}
+
+        Returns:
+            Configuration as string
+        """
+        vendor = vendor.lower()
+
+        # Backup commands should come from database (Vendor model)
+        # If not provided, use generic fallback
+        if backup_commands:
+            setup_commands = backup_commands.get('setup', [])
+            show_command = backup_commands.get('backup', 'show running-config')
+            need_enable = backup_commands.get('enable_mode', False)
+        else:
+            # Fallback for missing vendor config (should not happen in production)
+            setup_commands = []
+            show_command = 'show running-config'
+            need_enable = False
+
+        # Enable mode if needed
+        if need_enable:
+            self.enable_mode()
+
+        # Execute setup commands (don't capture output)
+        for cmd in setup_commands:
+            self.send_command(cmd, wait_time=1)
+
+        # MikroTik requires exec_command instead of invoke_shell for /export
+        if vendor == 'mikrotik':
+            config = self.send_command_exec(show_command, timeout=30)
+        else:
+            # Get configuration (different wait times per vendor)
+            wait_time = 10 if vendor == 'mikrotik' else 3
+            config = self.send_command(show_command, wait_time=wait_time)
+
+        return clean_device_output(config, vendor, show_command)
+
+    def _get_logout_commands(self, vendor_obj) -> List[str]:
+        """
+        Get vendor-specific logout commands from vendor settings or fallback to defaults
+
+        Logout commands can be customized in vendor's backup_commands JSON field.
+        Structure: {"logout": ["end", "exit"]}
+
+        Returns multiple commands to handle different modes (enable, config, etc.)
+
+        Args:
+            vendor_obj: Vendor model instance
+
+        Returns:
+            List of logout commands to send sequentially
+        """
+        # Try to get logout commands from vendor settings
+        if vendor_obj and hasattr(vendor_obj, 'backup_commands'):
+            backup_commands = vendor_obj.backup_commands or {}
+            if isinstance(backup_commands, dict) and 'logout' in backup_commands:
+                logout_cmds = backup_commands.get('logout', [])
+                if isinstance(logout_cmds, list) and logout_cmds:
+                    return logout_cmds
+
+        # Fallback to default for backward compatibility and generic devices
+        # Default: 'end' to exit config mode, then 'exit' to logout (works for most Cisco-like devices)
+        return ['end', 'exit']
+
+    def disconnect(self) -> None:
+        """Close SSH connection gracefully with vendor-specific logout commands"""
+        try:
+            if self.shell and self.shell.get_transport() and self.shell.get_transport().is_active():
+                # Send vendor-specific logout commands to gracefully close session
+                # This prevents hanging VTY lines and "Connection reset by peer" logs
+                try:
+                    logout_commands = self._get_logout_commands(self.vendor)
+                    for cmd in logout_commands:
+                        self.shell.send(f'{cmd}\n')
+                        time.sleep(0.3)  # Brief pause between commands
+                    time.sleep(0.5)  # Give device time to process logout
+                except:
+                    pass  # If sending logout commands fails, continue with forced close
+
+            if self.shell:
+                self.shell.close()
+            if self.client:
+                self.client.close()
+        except Exception as e:
+            # Ensure connection is closed even if graceful exit fails
+            try:
+                if self.shell:
+                    self.shell.close()
+            except:
+                pass
+            try:
+                if self.client:
+                    self.client.close()
+            except:
+                pass
+
+    def __enter__(self):
+        """Context manager entry"""
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        self.disconnect()
+
+
+class TelnetConnection:
+    """Telnet connection handler for network devices"""
+
+    def __init__(self, host: str, port: int, username: str, password: str,
+                 enable_password: Optional[str] = None, timeout: int = 30, vendor: str = ''):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.enable_password = enable_password
+        self.timeout = timeout
+        self.vendor = vendor
+        self.connection: Optional[telnetlib.Telnet] = None
+
+    def connect(self) -> None:
+        """Establish Telnet connection"""
+        try:
+            self.connection = telnetlib.Telnet(self.host, self.port, self.timeout)
+
+            # Wait for login prompt
+            self.connection.read_until(b"sername:", timeout=10)
+            self.connection.write(self.username.encode('ascii') + b'\n')
+
+            # Wait for password prompt
+            self.connection.read_until(b"assword:", timeout=10)
+            self.connection.write(self.password.encode('ascii') + b'\n')
+
+            time.sleep(2)
+
+        except socket.timeout:
+            raise DeviceConnectionError(f"Connection timeout to {self.host}")
+        except Exception as e:
+            raise DeviceConnectionError(f"Failed to connect to {self.host}: {str(e)}")
+
+    def send_command(self, command: str, wait_time: float = 2, handle_paging: bool = True) -> str:
+        """Send command and return output with automatic paging handling"""
+        if not self.connection:
+            raise DeviceConnectionError("Not connected")
+
+        try:
+            self.connection.write(command.encode('ascii') + b'\n')
+            time.sleep(wait_time)
+
+            output = ""
+            max_iterations = 100
+            iteration = 0
+
+            while iteration < max_iterations:
+                chunk = self.connection.read_very_eager().decode('utf-8', errors='ignore')
+                if chunk:
+                    output += chunk
+
+                    # Check for paging prompts and send space to continue
+                    if handle_paging and ('--More--' in chunk or '-- More --' in chunk or
+                                         '(more)' in chunk.lower() or 'press any key' in chunk.lower()):
+                        self.connection.write(b' ')  # Send space to continue
+                        time.sleep(0.5)
+                        iteration += 1
+                        continue
+
+                    time.sleep(0.1)
+                else:
+                    break
+                iteration += 1
+
+            return output
+
+        except Exception as e:
+            raise DeviceConnectionError(f"Error sending command: {str(e)}")
+
+    def send_commands(self, commands: List[str], wait_time: float = 2) -> List[str]:
+        """Send multiple commands"""
+        outputs = []
+        for command in commands:
+            output = self.send_command(command, wait_time)
+            outputs.append(output)
+        return outputs
+
+    def enable_mode(self) -> str:
+        """Enter enable mode"""
+        if not self.enable_password:
+            return ""
+
+        output = self.send_command("enable", wait_time=1)
+        output += self.send_command(self.enable_password, wait_time=1)
+        return output
+
+    def get_config(self, vendor: str, backup_commands: dict = None) -> str:
+        """
+        Get device configuration based on vendor
+
+        Args:
+            vendor: Device vendor slug (cisco, juniper, huawei, etc.)
+            backup_commands: Optional dict with 'setup' and 'backup' commands
+                           Format: {'setup': ['cmd1', 'cmd2'], 'backup': 'show running-config'}
+
+        Returns:
+            Configuration as string
+        """
+        vendor = vendor.lower()
+
+        # Backup commands should come from database (Vendor model)
+        # If not provided, use generic fallback
+        if backup_commands:
+            setup_commands = backup_commands.get('setup', [])
+            show_command = backup_commands.get('backup', 'show running-config')
+            need_enable = backup_commands.get('enable_mode', False)
+        else:
+            # Fallback for missing vendor config (should not happen in production)
+            setup_commands = []
+            show_command = 'show running-config'
+            need_enable = False
+
+        # Enable mode if needed
+        if need_enable:
+            self.enable_mode()
+
+        # Execute setup commands (don't capture output)
+        for cmd in setup_commands:
+            self.send_command(cmd, wait_time=1)
+
+        # Get configuration (MikroTik needs more time)
+        wait_time = 10 if vendor == 'mikrotik' else 3
+        config = self.send_command(show_command, wait_time=wait_time)
+
+        # Use the same cleaning method
+        return clean_device_output(config, vendor, show_command)
+
+    def _get_logout_commands(self, vendor: str) -> List[str]:
+        """
+        Get vendor-specific logout commands (same as SSH version)
+
+        Args:
+            vendor: Device vendor slug
+
+        Returns:
+            List of logout commands to send sequentially
+        """
+        vendor = vendor.lower()
+
+        # Vendor-specific logout sequences
+        logout_sequences = {
+            'huawei': ['quit', 'quit'],      # quit from system-view, quit from user-view
+            'hp': ['quit', 'quit'],           # quit from system-view, quit from user-view
+            'mikrotik': ['quit'],             # MikroTik uses quit
+            'fortinet': ['end', 'exit'],      # end config mode, exit session
+            'aruba': ['end', 'exit'],         # Aruba (HPE) - Cisco-like
+            'grandstream': ['exit'],          # Grandstream - simple exit
+        }
+
+        # For Cisco-like devices (Cisco, TP-Link, Arista, Juniper, Dell, Generic)
+        # Send 'end' to exit config mode, then 'exit' to logout
+        default_sequence = ['end', 'exit']
+
+        return logout_sequences.get(vendor, default_sequence)
+
+    def disconnect(self) -> None:
+        """Close Telnet connection gracefully with vendor-specific logout commands"""
+        try:
+            if self.connection:
+                # Send vendor-specific logout commands to gracefully close session
+                # This prevents hanging VTY lines and "Connection reset by peer" logs
+                try:
+                    logout_commands = self._get_logout_commands(self.vendor)
+                    for cmd in logout_commands:
+                        self.connection.write(f'{cmd}\n'.encode('ascii'))
+                        time.sleep(0.3)  # Brief pause between commands
+                    time.sleep(0.5)  # Give device time to process logout
+                except:
+                    pass  # If sending logout commands fails, continue with forced close
+
+                self.connection.close()
+        except Exception as e:
+            # Ensure connection is closed even if graceful exit fails
+            try:
+                if self.connection:
+                    self.connection.close()
+            except:
+                pass
+
+    def __enter__(self):
+        """Context manager entry"""
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        self.disconnect()
+
+
+def test_connection(host: str, port: int, protocol: str, username: str,
+                   password: str, enable_password: Optional[str] = None,
+                   timeout: int = 10) -> Tuple[bool, str]:
+    """
+    Test device connection
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    # SSRF protection - block loopback addresses
+    try:
+        validate_target_host(host)
+    except DeviceConnectionError as e:
+        return False, str(e)
+
+    try:
+        if protocol.lower() == 'ssh':
+            with SSHConnection(host, port, username, password, enable_password, timeout) as conn:
+                output = conn.send_command('show version', wait_time=1)
+                return True, "Connection successful"
+        else:
+            with TelnetConnection(host, port, username, password, enable_password, timeout) as conn:
+                output = conn.send_command('show version', wait_time=1)
+                return True, "Connection successful"
+    except Exception as e:
+        return False, str(e)
+
+
+def backup_device_config(host: str, port: int, protocol: str, username: str,
+                        password: str, vendor: str, enable_password: Optional[str] = None,
+                        timeout: int = 30, backup_commands: dict = None) -> Tuple[bool, str, str]:
+    """
+    Backup device configuration
+
+    Args:
+        host: Device IP address
+        port: Connection port
+        protocol: ssh or telnet
+        username: Login username
+        password: Login password
+        vendor: Vendor slug
+        enable_password: Optional enable password
+        timeout: Connection timeout
+        backup_commands: Optional dict with custom commands
+                        Format: {'setup': ['cmd1'], 'backup': 'show config', 'enable_mode': True}
+
+    Returns:
+        Tuple of (success: bool, config: str, error_message: str)
+    """
+    # SSRF protection - block loopback addresses
+    try:
+        validate_target_host(host)
+    except DeviceConnectionError as e:
+        return False, "", str(e)
+
+    try:
+        if protocol.lower() == 'ssh':
+            with SSHConnection(host, port, username, password, enable_password, timeout, vendor) as conn:
+                config = conn.get_config(vendor, backup_commands)
+                return True, config, ""
+        else:
+            with TelnetConnection(host, port, username, password, enable_password, timeout, vendor) as conn:
+                config = conn.get_config(vendor, backup_commands)
+                return True, config, ""
+    except Exception as e:
+        return False, "", str(e)

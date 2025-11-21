@@ -1,0 +1,712 @@
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import apiService from '../services/api.service';
+import '../styles/Devices.css';
+
+interface Device {
+  id: number;
+  name: string;
+  ip_address: string;
+  description: string;
+  vendor: number;
+  vendor_name: string;
+  device_type: number;
+  device_type_name: string;
+  protocol: string;
+  port: number;
+  username: string;
+  location: string;
+  criticality: string;
+  status: string;
+  backup_enabled: boolean;
+  last_backup: string | null;
+}
+
+interface Vendor {
+  id: number;
+  name: string;
+}
+
+interface DeviceType {
+  id: number;
+  name: string;
+}
+
+interface DeviceFormData {
+  name: string;
+  ip_address: string;
+  description: string;
+  vendor: string;
+  device_type: string;
+  protocol: string;
+  port: string;
+  username: string;
+  password: string;
+  enable_password: string;
+  location: string;
+  criticality: string;
+  backup_enabled: boolean;
+}
+
+const DevicesListPage: React.FC = () => {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [filteredDevices, setFilteredDevices] = useState<Device[]>([]);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [deviceTypes, setDeviceTypes] = useState<DeviceType[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [editingDevice, setEditingDevice] = useState<Device | null>(null);
+
+  // Filters
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterVendor, setFilterVendor] = useState('');
+  const [filterType, setFilterType] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [filterLocation, setFilterLocation] = useState('');
+
+  const [formData, setFormData] = useState<DeviceFormData>({
+    name: '',
+    ip_address: '',
+    description: '',
+    vendor: '',
+    device_type: '',
+    protocol: 'ssh',
+    port: '22',
+    username: '',
+    password: '',
+    enable_password: '',
+    location: '',
+    criticality: 'medium',
+    backup_enabled: true,
+  });
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useEffect(() => {
+    applyFilters();
+  }, [devices, searchTerm, filterVendor, filterType, filterStatus, filterLocation]);
+
+  const loadData = async () => {
+    await Promise.all([loadDevices(), loadVendors(), loadDeviceTypes()]);
+  };
+
+  const loadDevices = async () => {
+    try {
+      setLoading(true);
+      const response = await apiService.devices.list({ ordering: 'name' });
+      const devicesList = Array.isArray(response) ? response : response.results || [];
+      setDevices(devicesList);
+    } catch (error) {
+      console.error('Error loading devices:', error);
+      alert(t('common.error') + ': Failed to load devices');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadVendors = async () => {
+    try {
+      const response = await apiService.vendors.list();
+      const vendorsList = Array.isArray(response) ? response : response.results || [];
+      setVendors(vendorsList);
+    } catch (error) {
+      console.error('Error loading vendors:', error);
+    }
+  };
+
+  const loadDeviceTypes = async () => {
+    try {
+      const response = await apiService.deviceTypes.list();
+      const typesList = Array.isArray(response) ? response : response.results || [];
+      setDeviceTypes(typesList);
+    } catch (error) {
+      console.error('Error loading device types:', error);
+    }
+  };
+
+  const applyFilters = () => {
+    let filtered = devices;
+
+    // Search filter
+    if (searchTerm) {
+      filtered = filtered.filter(device =>
+        device.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        device.ip_address.includes(searchTerm) ||
+        (device.location && device.location.toLowerCase().includes(searchTerm.toLowerCase()))
+      );
+    }
+
+    // Vendor filter
+    if (filterVendor) {
+      filtered = filtered.filter(device => String(device.vendor) === filterVendor);
+    }
+
+    // Type filter
+    if (filterType) {
+      filtered = filtered.filter(device => String(device.device_type) === filterType);
+    }
+
+    // Status filter
+    if (filterStatus) {
+      filtered = filtered.filter(device => device.status === filterStatus);
+    }
+
+    // Location filter
+    if (filterLocation) {
+      filtered = filtered.filter(device =>
+        device.location && device.location.toLowerCase().includes(filterLocation.toLowerCase())
+      );
+    }
+
+    setFilteredDevices(filtered);
+  };
+
+  const clearFilters = () => {
+    setSearchTerm('');
+    setFilterVendor('');
+    setFilterType('');
+    setFilterStatus('');
+    setFilterLocation('');
+  };
+
+  const handleAddDevice = () => {
+    setEditingDevice(null);
+    setFormData({
+      name: '',
+      ip_address: '',
+      description: '',
+      vendor: vendors.length > 0 ? String(vendors[0].id) : '',
+      device_type: deviceTypes.length > 0 ? String(deviceTypes[0].id) : '',
+      protocol: 'ssh',
+      port: '22',
+      username: '',
+      password: '',
+      enable_password: '',
+      location: '',
+      criticality: 'medium',
+      backup_enabled: true,
+    });
+    setShowModal(true);
+  };
+
+  const handleEditDevice = async (device: Device) => {
+    setEditingDevice(device);
+    setFormData({
+      name: device.name,
+      ip_address: device.ip_address,
+      description: device.description,
+      vendor: String(device.vendor),
+      device_type: String(device.device_type),
+      protocol: device.protocol,
+      port: String(device.port),
+      username: device.username,
+      password: '',
+      enable_password: '',
+      location: device.location,
+      criticality: device.criticality,
+      backup_enabled: device.backup_enabled,
+    });
+    setShowModal(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    try {
+      const payload: any = {
+        name: formData.name,
+        ip_address: formData.ip_address,
+        description: formData.description,
+        vendor: parseInt(formData.vendor),
+        device_type: parseInt(formData.device_type),
+        protocol: formData.protocol,
+        port: parseInt(formData.port),
+        username: formData.username,
+        location: formData.location,
+        criticality: formData.criticality,
+        backup_enabled: formData.backup_enabled,
+      };
+
+      if (formData.password) {
+        payload.password = formData.password;
+      }
+
+      if (formData.enable_password) {
+        payload.enable_password = formData.enable_password;
+      }
+
+      if (editingDevice) {
+        await apiService.devices.update(editingDevice.id, payload);
+        alert(t('devices.device_updated'));
+      } else {
+        if (!formData.password) {
+          alert(t('devices.password_required'));
+          return;
+        }
+        await apiService.devices.create(payload);
+        alert(t('devices.device_created'));
+      }
+
+      setShowModal(false);
+      loadDevices();
+    } catch (error: any) {
+      console.error('Error saving device:', error);
+      alert(t('common.error') + ': ' + (error.response?.data?.message || t('devices.failed_save')));
+    }
+  };
+
+  const handleDeleteDevice = async (device: Device, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete device "${device.name}"?`)) {
+      return;
+    }
+
+    try {
+      await apiService.devices.delete(device.id);
+      alert(t('devices.device_deleted'));
+      loadDevices();
+    } catch (error) {
+      console.error('Error deleting device:', error);
+      alert(t('devices.failed_delete'));
+    }
+  };
+
+  const handleBackupNow = async (device: Device, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      // Queue backup task - real-time progress will be shown in TaskTerminal
+      await apiService.devices.backupNow(device.id);
+      // No alert - logs will appear in TaskTerminal
+    } catch (error: any) {
+      console.error('Error initiating backup:', error);
+      alert(t('common.error') + ': ' + (error.response?.data?.error || 'Failed to queue backup task'));
+    }
+  };
+
+  const handleTestConnection = async (device: Device, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const result = await apiService.devices.testConnection(device.id);
+      if (result.success) {
+        alert(`${t('common.success')}: ${result.message}`);
+      } else {
+        alert(`${t('common.error')}: ${result.message}`);
+      }
+      // Reload devices to update status
+      loadDevices();
+    } catch (error: any) {
+      console.error('Error testing connection:', error);
+      alert(t('common.error') + ': Connection test failed');
+    }
+  };
+
+  const handleProtocolChange = (protocol: string) => {
+    setFormData({
+      ...formData,
+      protocol,
+      port: protocol === 'ssh' ? '22' : '23',
+    });
+  };
+
+  const getUniqueLocations = () => {
+    const locations = devices
+      .map(d => d.location)
+      .filter(l => l && l.trim() !== '');
+    return Array.from(new Set(locations));
+  };
+
+  if (loading) {
+    return (
+      <div className="devices-page">
+        <div className="loading-container">
+          <div className="spinner"></div>
+          <p>{t('common.loading')}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="devices-page">
+      <div className="page-header">
+        <h1>{t('devices.title')}</h1>
+        <div style={{ display: 'flex', gap: '1rem' }}>
+          <button onClick={loadDevices} className="btn-primary">
+            🔄 {t('common.refresh')}
+          </button>
+          <button onClick={handleAddDevice} className="btn-primary">
+            ➕ {t('devices.add_device')}
+          </button>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="filters-section">
+        <div className="filters-row">
+          <input
+            type="text"
+            placeholder={t('common.search') + ' (name, IP, location)...'}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="search-input"
+            style={{ flex: 2 }}
+          />
+
+          <select
+            value={filterVendor}
+            onChange={(e) => setFilterVendor(e.target.value)}
+            className="filter-select"
+          >
+            <option value="">{t('devices.all_vendors')}</option>
+            {vendors.map(vendor => (
+              <option key={vendor.id} value={vendor.id}>{vendor.name}</option>
+            ))}
+          </select>
+
+          <select
+            value={filterType}
+            onChange={(e) => setFilterType(e.target.value)}
+            className="filter-select"
+          >
+            <option value="">{t('devices.all_types')}</option>
+            {deviceTypes.map(type => (
+              <option key={type.id} value={type.id}>{type.name}</option>
+            ))}
+          </select>
+
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="filter-select"
+          >
+            <option value="">{t('devices.all_status')}</option>
+            <option value="online">{t('devices.online')}</option>
+            <option value="offline">{t('devices.offline')}</option>
+            <option value="unknown">{t('devices.unknown')}</option>
+          </select>
+
+          <input
+            type="text"
+            placeholder={t('devices.location_placeholder')}
+            value={filterLocation}
+            onChange={(e) => setFilterLocation(e.target.value)}
+            className="search-input"
+          />
+
+          <button onClick={clearFilters} className="btn-secondary">
+            ✕ {t('devices.clear_filters')}
+          </button>
+        </div>
+      </div>
+
+      {/* Devices Table */}
+      {filteredDevices.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon">🖥️</div>
+          <h3>{t('devices.no_devices')}</h3>
+          <p>{devices.length === 0 ? t('devices.add_first_device') : t('devices.adjust_filters')}</p>
+          {devices.length === 0 && (
+            <button onClick={handleAddDevice} className="btn-primary">
+              {t('devices.add_device')}
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="table-container">
+          <table className="devices-table">
+            <thead>
+              <tr>
+                <th>{t('devices.name')}</th>
+                <th>{t('devices.ip_address')}</th>
+                <th>{t('devices.vendor')}</th>
+                <th>{t('devices.type')}</th>
+                <th>{t('devices.location')}</th>
+                <th>{t('devices.status')}</th>
+                <th>{t('devices.last_backup')}</th>
+                <th>{t('devices.actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredDevices.map((device) => (
+                <tr
+                  key={device.id}
+                  onClick={() => navigate(`/devices/${device.id}`)}
+                  style={{ cursor: 'pointer' }}
+                  className="table-row-hover"
+                >
+                  <td>
+                    <strong>
+                      {device.name}
+                      {device.backup_enabled && (
+                        <span
+                          style={{
+                            marginLeft: '0.5rem',
+                            fontSize: '0.875rem',
+                            color: 'var(--success-color)',
+                            cursor: 'help'
+                          }}
+                          title={t('devices.auto_backup_enabled')}
+                        >
+                          💾✓
+                        </span>
+                      )}
+                    </strong>
+                    {device.description && (
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                        {device.description.substring(0, 50)}
+                        {device.description.length > 50 ? '...' : ''}
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ fontFamily: 'monospace' }}>{device.ip_address}</td>
+                  <td>{device.vendor_name}</td>
+                  <td>{device.device_type_name}</td>
+                  <td>{device.location || '-'}</td>
+                  <td>
+                    <span className={`status-badge status-${device.status}`}>
+                      {device.status}
+                    </span>
+                  </td>
+                  <td style={{ fontSize: '0.875rem' }}>
+                    {device.last_backup
+                      ? new Date(device.last_backup).toLocaleString()
+                      : t('devices.never')}
+                  </td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+                      <button
+                        onClick={(e) => handleBackupNow(device, e)}
+                        className="btn-sm btn-success"
+                        title={t('devices.backup_now')}
+                      >
+                        💾
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditDevice(device);
+                        }}
+                        className="btn-sm btn-secondary"
+                        title={t('common.edit')}
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        onClick={(e) => handleTestConnection(device, e)}
+                        className="btn-sm btn-primary"
+                        title={t('devices.test_connection')}
+                      >
+                        🔌
+                      </button>
+                      <button
+                        onClick={(e) => handleDeleteDevice(device, e)}
+                        className="btn-sm btn-danger"
+                        title={t('common.delete')}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="footer-stats">
+        Total: {devices.length} | Filtered: {filteredDevices.length}
+      </div>
+
+      {/* Add/Edit Device Modal - Same as before */}
+      {showModal && (
+        <div className="modal-overlay" onClick={() => setShowModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>{editingDevice ? t('devices.edit_device') : t('devices.add_device')}</h2>
+              <button onClick={() => setShowModal(false)} className="btn-close">
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit}>
+              <div className="modal-body">
+                <div className="form-group">
+                  <label>{t('devices.device_name')} *</label>
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    required
+                  />
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>{t('devices.ip_address')} *</label>
+                    <input
+                      type="text"
+                      value={formData.ip_address}
+                      onChange={(e) => setFormData({ ...formData, ip_address: e.target.value })}
+                      required
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label>Location</label>
+                    <input
+                      type="text"
+                      value={formData.location}
+                      onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>{t('devices.vendor')} *</label>
+                    <select
+                      value={formData.vendor}
+                      onChange={(e) => setFormData({ ...formData, vendor: e.target.value })}
+                      required
+                    >
+                      <option value="">Select vendor</option>
+                      {vendors.map((vendor) => (
+                        <option key={vendor.id} value={vendor.id}>
+                          {vendor.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label>{t('devices.device_type')} *</label>
+                    <select
+                      value={formData.device_type}
+                      onChange={(e) => setFormData({ ...formData, device_type: e.target.value })}
+                      required
+                    >
+                      <option value="">Select type</option>
+                      {deviceTypes.map((type) => (
+                        <option key={type.id} value={type.id}>
+                          {type.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>{t('devices.protocol')} *</label>
+                    <select
+                      value={formData.protocol}
+                      onChange={(e) => handleProtocolChange(e.target.value)}
+                      required
+                    >
+                      <option value="ssh">SSH</option>
+                      <option value="telnet">Telnet</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label>{t('devices.port')} *</label>
+                    <input
+                      type="number"
+                      value={formData.port}
+                      onChange={(e) => setFormData({ ...formData, port: e.target.value })}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Username *</label>
+                  <input
+                    type="text"
+                    value={formData.username}
+                    onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                    required
+                  />
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Password {!editingDevice && '*'}</label>
+                    <input
+                      type="password"
+                      value={formData.password}
+                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                      required={!editingDevice}
+                      placeholder={editingDevice ? 'Leave empty to keep current' : ''}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label>Enable Password</label>
+                    <input
+                      type="password"
+                      value={formData.enable_password}
+                      onChange={(e) => setFormData({ ...formData, enable_password: e.target.value })}
+                      placeholder="For Cisco devices"
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Criticality</label>
+                  <select
+                    value={formData.criticality}
+                    onChange={(e) => setFormData({ ...formData, criticality: e.target.value })}
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label>Description</label>
+                  <textarea
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    rows={3}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <div className="checkbox-group">
+                    <input
+                      type="checkbox"
+                      id="backup_enabled"
+                      checked={formData.backup_enabled}
+                      onChange={(e) => setFormData({ ...formData, backup_enabled: e.target.checked })}
+                    />
+                    <label htmlFor="backup_enabled">{t('devices.backup_enabled')}</label>
+                  </div>
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">
+                  {t('common.cancel')}
+                </button>
+                <button type="submit" className="btn-primary">
+                  {t('common.save')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default DevicesListPage;

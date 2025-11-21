@@ -1,0 +1,35 @@
+# Environment files with secrets
+backend/.env
+frontend/.env
+
+# Python
+backend/venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+backend/celerybeat-schedule
+
+# Node
+frontend/node_modules/
+frontend/build/
+
+# Logs
+logs/
+backend/logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Claude
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups with sensitive data
+backend/backups/
